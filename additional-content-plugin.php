@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate).
-Version: 5.0
+Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate & Auto Repair).
+Version: 5.1
 Author: Grok
 */
 
@@ -67,7 +67,6 @@ function acp_admin_page() {
             update_option('acp_endpoints', $new_endpoints);
             echo '<div class="updated"><p>' . $count . ' Endpoint berhasil dibuat.</p></div>';
             
-            // Update rewrite rules
             acp_register_rewrite_rules();
             flush_rewrite_rules();
         }
@@ -83,6 +82,9 @@ function acp_admin_page() {
         $endpoints = get_option('acp_endpoints', []);
         
         foreach ($endpoints as $ep) {
+            // Pastikan json_filename ada sebelum generate
+            if(empty($ep['json_filename'])) continue;
+
             $json_url = ACP_JSON_BASE_URL . $ep['json_filename'] . '.json';
             $result = acp_generate_sitemap($json_url, $ep['sitemap_name']);
             
@@ -103,6 +105,29 @@ function acp_admin_page() {
 
     // Get current endpoints
     $endpoints = get_option('acp_endpoints', false);
+
+    // === AUTO REPAIR LOGIC ===
+    // Jika data lama terbaca (dimana json_filename kosong), kita perbaiki otomatis
+    if ($endpoints !== false && is_array($endpoints)) {
+        $is_dirty = false;
+        foreach ($endpoints as &$ep) {
+            if (!isset($ep['json_filename']) || empty($ep['json_filename'])) {
+                $ep['json_filename'] = acp_generate_random_string(10);
+                $is_dirty = true;
+            }
+            if (!isset($ep['sitemap_name']) || empty($ep['sitemap_name'])) {
+                $ep['sitemap_name'] = acp_generate_random_string(5);
+                $is_dirty = true;
+            }
+        }
+        unset($ep); // break reference
+        
+        if ($is_dirty) {
+            update_option('acp_endpoints', $endpoints);
+            echo '<div class="updated"><p>Data lama terdeteksi dan telah diperbarui secara otomatis dengan nama JSON baru.</p></div>';
+        }
+    }
+    // === END AUTO REPAIR ===
 
     ?>
     <div class="wrap">
@@ -140,7 +165,6 @@ function acp_admin_page() {
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </li>
-                        <br>
                     <?php endforeach; ?>
                     </ul>
                 </div>
@@ -182,7 +206,7 @@ function acp_admin_page() {
             </form>
 
             <hr>
-            <form method="post" action="" onsubmit="return confirm('Apakah Anda yakin ingin menghapus semua endpoint dan mulai dari awal?');">
+            <form method="post" action="" onsubmit="return confirm('Yakin ingin hapus semua dan mulai dari awal?');">
                 <?php wp_nonce_field('acp_action'); ?>
                 <input type="submit" name="acp_reset" class="button button-secondary" value="Reset / Hapus Semua Endpoint">
             </form>
@@ -192,27 +216,21 @@ function acp_admin_page() {
     <?php
 }
 
-// Register rewrite rules
+// Rewrite Rules
 add_action('init', 'acp_register_rewrite_rules');
 function acp_register_rewrite_rules() {
-    add_rewrite_rule(
-        '^([^/]+)/?$',
-        'index.php?acp_value=$matches[1]',
-        'top'
-    );
+    add_rewrite_rule('^([^/]+)/?$', 'index.php?acp_value=$matches[1]', 'top');
 }
 
-// Register custom query vars
 add_filter('query_vars', 'acp_query_vars');
 function acp_query_vars($vars) {
     $vars[] = 'acp_value';
     return $vars;
 }
 
-// Function to generate sitemap
+// Sitemap Generator
 function acp_generate_sitemap($konten_json_url, $sitemap_name) {
-    // Fetch konten.json
-    $response = wp_remote_get($konten_json_url, ['timeout' => 30]); // Timeout diperpanjang
+    $response = wp_remote_get($konten_json_url, ['timeout' => 30]);
     if (is_wp_error($response)) {
         return new WP_Error('fetch_error', 'Gagal mengambil JSON: ' . $response->get_error_message());
     }
@@ -237,7 +255,6 @@ function acp_generate_sitemap($konten_json_url, $sitemap_name) {
     foreach ($konten_chunks as $index => $chunk) {
         $xml = '<?xml version="1.0" encoding="UTF-8"?>';
         $xml .= '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
-        
         foreach ($chunk as $title => $content) {
             $url = esc_url(home_url(urlencode($title)));
             $xml .= '<url><loc>' . $url . '</loc><lastmod>' . current_time('c') . '</lastmod><changefreq>weekly</changefreq></url>';
@@ -251,11 +268,10 @@ function acp_generate_sitemap($konten_json_url, $sitemap_name) {
             $sitemap_urls[] = home_url($filename);
         }
     }
-
     return $sitemap_urls;
 }
 
-// Handle frontend content display
+// Frontend Display
 add_action('template_redirect', 'acp_handle_content_display');
 function acp_handle_content_display() {
     $value = get_query_var('acp_value');
@@ -269,12 +285,10 @@ function acp_handle_content_display() {
     // Cek post asli WP dulu
     if (get_page_by_path($title, OBJECT, ['post', 'page'])) return;
 
-    // Loop endpoints
     foreach ($endpoints as $endpoint) {
-        // Construct Dynamic URL
+        if(empty($endpoint['json_filename'])) continue;
+
         $konten_json_url = ACP_JSON_BASE_URL . $endpoint['json_filename'] . '.json';
-        
-        // Caching
         $cache_key = 'acp_konten_' . md5($konten_json_url);
         $konten_data = get_transient($cache_key);
 
@@ -288,18 +302,13 @@ function acp_handle_content_display() {
             }
         }
 
-        // Cari konten
         if (is_array($konten_data)) {
             foreach ($konten_data as $key => $content_val) {
                 if (strtolower($key) === strtolower($title)) {
-                    $additional_content = $content_val;
-                    
-                    // Found! Fetch Hardcoded Template
                     $template_response = wp_remote_get(ACP_TEMPLATE_URL, ['timeout' => 15]);
                     if (!is_wp_error($template_response)) {
                         $template_content = wp_remote_retrieve_body($template_response);
                         if (!empty($template_content)) {
-                            // Render
                             ob_start();
                             eval('?>' . $template_content);
                             echo ob_get_clean();
@@ -311,7 +320,6 @@ function acp_handle_content_display() {
         }
     }
     
-    // 404 jika tidak ketemu di endpoint manapun
     global $wp_query;
     $wp_query->set_404();
     status_header(404);
