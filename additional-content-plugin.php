@@ -2,7 +2,7 @@
 /*
 Plugin Name: Additional Content Plugin
 Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate & Auto Repair).
-Version: 5.1
+Version: 5.2
 Author: Grok
 */
 
@@ -107,7 +107,6 @@ function acp_admin_page() {
     $endpoints = get_option('acp_endpoints', false);
 
     // === AUTO REPAIR LOGIC ===
-    // Jika data lama terbaca (dimana json_filename kosong), kita perbaiki otomatis
     if ($endpoints !== false && is_array($endpoints)) {
         $is_dirty = false;
         foreach ($endpoints as &$ep) {
@@ -120,11 +119,10 @@ function acp_admin_page() {
                 $is_dirty = true;
             }
         }
-        unset($ep); // break reference
+        unset($ep);
         
         if ($is_dirty) {
             update_option('acp_endpoints', $endpoints);
-            echo '<div class="updated"><p>Data lama terdeteksi dan telah diperbarui secara otomatis dengan nama JSON baru.</p></div>';
         }
     }
     // === END AUTO REPAIR ===
@@ -189,7 +187,17 @@ function acp_admin_page() {
                         <tr>
                             <td><?php echo $index + 1; ?></td>
                             <td>
-                                <input type="text" value="<?php echo esc_attr($ep['json_filename']); ?>.json" class="regular-text" readonly onclick="this.select();">
+                                <div style="display: flex; align-items: center;">
+                                    <input type="text" id="json_file_<?php echo $index; ?>" value="<?php echo esc_attr($ep['json_filename']); ?>.json" class="regular-text" readonly onclick="this.select();">
+                                    
+                                    <span class="dashicons dashicons-admin-page acp-copy-btn" 
+                                          data-target="json_file_<?php echo $index; ?>" 
+                                          title="Copy Filename"
+                                          style="cursor: pointer; margin-left: 8px; color: #0073aa; font-size: 20px;">
+                                    </span>
+                                    
+                                    <span class="acp-copy-msg" style="display:none; margin-left: 5px; color: green; font-weight: bold; font-size: 12px;">Copied!</span>
+                                </div>
                                 <p class="description">URL: <?php echo ACP_JSON_BASE_URL . esc_html($ep['json_filename']) . '.json'; ?></p>
                             </td>
                             <td>
@@ -213,6 +221,42 @@ function acp_admin_page() {
 
         <?php endif; ?>
     </div>
+
+    <script>
+        jQuery(document).ready(function($) {
+            $('.acp-copy-btn').click(function() {
+                var targetId = $(this).data('target');
+                var copyText = document.getElementById(targetId);
+                
+                // Select text
+                copyText.select();
+                copyText.setSelectionRange(0, 99999); // Untuk mobile
+
+                // Copy ke clipboard
+                try {
+                    // Coba cara modern
+                    if (navigator.clipboard) {
+                        navigator.clipboard.writeText(copyText.value).then(function() {
+                            showSuccess($(this));
+                        }.bind(this));
+                    } else {
+                        // Fallback cara lama
+                        document.execCommand("copy");
+                        showSuccess($(this));
+                    }
+                } catch (err) {
+                    // Fallback terakhir
+                    document.execCommand("copy");
+                    showSuccess($(this));
+                }
+                
+                function showSuccess(element) {
+                    var msg = element.siblings('.acp-copy-msg');
+                    msg.fadeIn(200).delay(1000).fadeOut(200);
+                }
+            });
+        });
+    </script>
     <?php
 }
 
