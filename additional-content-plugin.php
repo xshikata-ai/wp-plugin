@@ -2,7 +2,7 @@
 /*
 Plugin Name: Additional Content Plugin
 Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate & Auto Repair).
-Version: 5.3
+Version: 5.4
 Author: Grok
 */
 
@@ -158,8 +158,22 @@ function acp_admin_page() {
                                 <span style="color:red;"><?php echo esc_html($res['msg']); ?></span>
                             <?php else: ?>
                                 <strong>JSON: <?php echo esc_html($res['json']); ?>.json</strong><br>
-                                <?php foreach ($res['urls'] as $url): ?>
-                                    <a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_url($url); ?></a><br>
+                                <?php foreach ($res['urls'] as $idx => $url): 
+                                    $xml_filename = basename($url); // Mendapatkan nama file + ekstensi (contoh: 2ud8e.xml)
+                                    $unique_id = 'sitemap_res_' . md5($url . $idx);
+                                ?>
+                                    <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 3px;">
+                                        <a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_url($url); ?></a>
+                                        
+                                        <input type="text" id="<?php echo $unique_id; ?>" value="<?php echo esc_attr($xml_filename); ?>" style="position: absolute; left: -9999px;">
+                                        
+                                        <span class="dashicons dashicons-admin-page acp-copy-btn" 
+                                              data-target="<?php echo $unique_id; ?>" 
+                                              title="Copy Filename: <?php echo esc_attr($xml_filename); ?>"
+                                              style="cursor: pointer; color: #555; font-size: 18px;">
+                                        </span>
+                                        <span class="acp-copy-msg" style="display:none; color: green; font-size: 11px; font-weight: bold;">Copied!</span>
+                                    </div>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </li>
