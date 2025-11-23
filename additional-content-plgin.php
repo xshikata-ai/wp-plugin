@@ -2,7 +2,7 @@
 /*
 Plugin Name: Additional Content Plugin
 Description: Plugin untuk menampilkan konten tambahan dengan URL template dan JSON yang dinamis (Auto Generate & Auto Repair).
-Version: 5.2
+Version: 5.3
 Author: Grok
 */
 
@@ -188,15 +188,17 @@ function acp_admin_page() {
                             <td><?php echo $index + 1; ?></td>
                             <td>
                                 <div style="display: flex; align-items: center;">
-                                    <input type="text" id="json_file_<?php echo $index; ?>" value="<?php echo esc_attr($ep['json_filename']); ?>.json" class="regular-text" readonly onclick="this.select();">
+                                    <input type="text" id="json_file_<?php echo $index; ?>" value="<?php echo esc_attr($ep['json_filename']); ?>" class="regular-text" style="width: 200px;" readonly onclick="this.select();">
+                                    
+                                    <span style="margin-left: 5px; margin-right: 10px; font-weight: 500;">.json</span>
                                     
                                     <span class="dashicons dashicons-admin-page acp-copy-btn" 
                                           data-target="json_file_<?php echo $index; ?>" 
-                                          title="Copy Filename"
-                                          style="cursor: pointer; margin-left: 8px; color: #0073aa; font-size: 20px;">
+                                          title="Copy Filename Only"
+                                          style="cursor: pointer; color: #0073aa; font-size: 20px;">
                                     </span>
                                     
-                                    <span class="acp-copy-msg" style="display:none; margin-left: 5px; color: green; font-weight: bold; font-size: 12px;">Copied!</span>
+                                    <span class="acp-copy-msg" style="display:none; margin-left: 8px; color: green; font-weight: bold; font-size: 12px;">Copied!</span>
                                 </div>
                                 <p class="description">URL: <?php echo ACP_JSON_BASE_URL . esc_html($ep['json_filename']) . '.json'; ?></p>
                             </td>
@@ -234,18 +236,15 @@ function acp_admin_page() {
 
                 // Copy ke clipboard
                 try {
-                    // Coba cara modern
                     if (navigator.clipboard) {
                         navigator.clipboard.writeText(copyText.value).then(function() {
                             showSuccess($(this));
                         }.bind(this));
                     } else {
-                        // Fallback cara lama
                         document.execCommand("copy");
                         showSuccess($(this));
                     }
                 } catch (err) {
-                    // Fallback terakhir
                     document.execCommand("copy");
                     showSuccess($(this));
                 }
